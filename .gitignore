@@ -1,0 +1,40 @@
+# ===== Secrets / environment =====
+.env
+.env.*
+*.env
+
+# ===== Editor / IDE =====
+.idea/
+.vscode/
+*.swp
+
+# ===== Claude =====
+.claude/
+
+# ===== OS =====
+.DS_Store
+
+# ===== Python (pipeline) =====
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# ===== dbt artifacts (any location) =====
+target/
+dbt_packages/
+logs/
+
+# ===== Node / Next.js (web) =====
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+
+# ===== Data samples / scratch =====
+*.csv
+
+# ===== Markdown docs / planning =====
+*.md

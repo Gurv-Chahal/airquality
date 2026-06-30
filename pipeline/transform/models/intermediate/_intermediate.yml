@@ -1,0 +1,15 @@
+version: 2
+
+models:
+  - name: int_pm25_gapfilled
+    description: Hourly PM2.5 spine per station with short gaps forward-filled, long gaps dropped, and a was_imputed mask.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [station_id, valid_time]
+    columns:
+      - name: station_id
+        tests: [not_null]
+      - name: valid_time
+        tests: [not_null]
+      - name: pm25
+        tests: [not_null]      # after ffill + dropping long gaps, no PM2.5 should be null

@@ -1,0 +1,13 @@
+version: 2
+
+models:
+  - name: feat_pm25
+    description: PM2.5 feature table (skeleton — single lag; expands in Phase 1e steps 3-5).
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [station_id, valid_time]
+    columns:
+      - name: station_id
+        tests: [not_null]
+      - name: valid_time
+        tests: [not_null]

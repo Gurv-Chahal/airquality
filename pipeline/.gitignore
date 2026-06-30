@@ -1,0 +1,26 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Secrets
+.env
+.env.*
+
+# dbt artifacts
+transform/target/
+transform/dbt_packages/
+transform/logs/
+
+# Data samples / scratch
+*.csv
+
+# Markdown docs
+*.md
+
+# OS / editor
+.DS_Store
+.idea/
+.claude/

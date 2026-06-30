@@ -1,0 +1,24 @@
+version: 2
+
+models:
+  - name: stg_pm25
+    description: Cleaned/cast/deduped PM2.5 observations, one row per station-hour (UTC, hour-ending).
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [station_id, valid_time]
+    columns:
+      - name: station_id
+        tests: [not_null]
+      - name: valid_time
+        tests: [not_null]
+
+  - name: stg_weather
+    description: Cleaned/cast weather, shifted to hour-ending UTC so it aligns with stg_pm25.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [station_id, valid_time]
+    columns:
+      - name: station_id
+        tests: [not_null]
+      - name: valid_time
+        tests: [not_null]
