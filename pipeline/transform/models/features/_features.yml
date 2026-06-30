@@ -1,8 +1,8 @@
 version: 2
 
 models:
-  - name: feat_pm25
-    description: PM2.5 feature table (skeleton — single lag; expands in Phase 1e steps 3-5).
+  - name: feat_airquality
+    description: Final per-hour feature table — PM2.5 + weather + lags + trailing rolling + local-time calendar.
     tests:
       - dbt_utils.unique_combination_of_columns:
           combination_of_columns: [station_id, valid_time]
@@ -10,4 +10,6 @@ models:
       - name: station_id
         tests: [not_null]
       - name: valid_time
+        tests: [not_null]
+      - name: pm25
         tests: [not_null]
