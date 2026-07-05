@@ -17,6 +17,12 @@ transform/logs/
 # Data samples / scratch
 *.csv
 
+# Local ML artifacts (regenerable; canonical copies live in W&B)
+wandb/
+artifacts/
+*.npz
+*.parquet
+
 # Markdown docs
 *.md
 

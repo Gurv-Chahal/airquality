@@ -22,7 +22,7 @@ overall as (
 
 hours as (   -- a generous backward series of hourly timestamps (4800h ≈ 200 days covers the window)
     select dateadd('hour', -seq4(), (select max_t from overall)) as valid_time
-    from table(generator(rowcount => 4800))
+    from table(generator(rowcount => 30000))   -- ~3.4 years, comfortably covers DAYS=1095
 ),
 
 spine as (   -- every hour within each station's own range (gaps become real rows)

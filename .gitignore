@@ -36,5 +36,5 @@ build/
 # ===== Data samples / scratch =====
 *.csv
 
-# ===== Markdown docs / planning =====
+# ===== Markdown docs / planning (README is the exception) =====
 *.md
