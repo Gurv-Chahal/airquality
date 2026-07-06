@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import Link from "next/link";
 import TopBar from "./components/TopBar";
 import ForecastChart, { type ChartPoint } from "./ForecastChart";
 import BenchmarkPanel, { type EvalRow, type MaeRow, type NaiveMae } from "./BenchmarkPanel";
@@ -155,8 +154,6 @@ export default function Dashboard() {
 
     const lstmMae = evalData.mae.find((m) => m.model !== "skeleton") ?? null;
     const naive = evalData.naive;
-    // improvement vs the naive baseline, as the mock's "−XX% vs naive t−24h" pill
-    const deltaPct = lstmMae && naive ? Math.round((1 - lstmMae.mae / naive.mae) * 100) : null;
 
     const modelVersion = forecasts[0]?.modelVersion ?? hero?.modelVersion ?? null;
     // "updated HH:MM" = newest forecast issue time across all stations
@@ -244,17 +241,9 @@ export default function Dashboard() {
                             </span>
                             <span className="text-xs font-medium text-[#5b6b7f]">µg/m³ MAE</span>
                         </div>
-                        {deltaPct != null ? (
-                            <div className={`mt-[9px] inline-block rounded-full px-2 py-0.5 font-mono text-[11px] font-semibold ${
-                                     deltaPct >= 0 ? "bg-[#e9f5ec] text-[#166534]" : "bg-[#f1f4f7] text-[#5b6b7f]"
-                                 }`}>
-                                {deltaPct >= 0 ? "−" : "+"}{Math.abs(deltaPct)}% vs naive t−24h
-                            </div>
-                        ) : (
-                            <div className="mt-[9px] text-[11px] text-[#98a6b8]">
-                                {lstmMae ? `across ${lstmMae.n} realized forecasts` : "no realized forecasts yet"}
-                            </div>
-                        )}
+                        <div className="mt-[9px] text-[11px] text-[#98a6b8]">
+                            {lstmMae ? `across ${lstmMae.n} realized forecasts` : "no realized forecasts yet"}
+                        </div>
                     </div>
 
                     <div className="rounded-xl bg-[#101828] px-[18px] py-4 text-[#e8edf4]">
@@ -263,8 +252,7 @@ export default function Dashboard() {
                             LSTM · <span className="font-mono">{modelVersion ?? "—"}</span>
                         </div>
                         <div className="mt-1.5 text-[11px] leading-[1.6] text-[#aab6c6]">
-                            48 h × 13 features → 64 hidden units.<br />
-                            Pinned W&amp;B artifact · retrain triggered by live error.
+                            48 h × 13 features → 64 hidden units.
                         </div>
                     </div>
                 </div>
@@ -328,17 +316,6 @@ export default function Dashboard() {
                         <BenchmarkPanel rows={evalTableRows} lstm={lstmMae} naive={naive} />
                     </div>
                 </div>
-
-                {/* dark CTA strip */}
-                <Link href="/model"
-                      className="mt-3.5 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[#101828] px-5 py-[15px] transition-colors hover:bg-[#16203a]">
-                    <span className="font-mono text-[11.5px] text-[#aab6c6]">
-                        OpenAQ + Open-Meteo → Snowflake / dbt → PyTorch LSTM → Postgres · precomputed hourly · idempotent
-                    </span>
-                    <span className="whitespace-nowrap text-xs font-semibold text-[#7fb0f4]">
-                        Beats tuned XGBoost by 3% RMSE, −18% vs naive → Model &amp; methods
-                    </span>
-                </Link>
 
                 <div className="mt-[22px] text-center text-[10.5px] text-[#98a6b8]">
                     Data: OpenAQ (PM2.5) · Open-Meteo (weather) — forecasts precomputed hourly by the batch
