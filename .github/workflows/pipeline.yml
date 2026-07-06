@@ -45,8 +45,8 @@ jobs:
           dbt run
           dbt test
 
-      - name: Run forecast
-        run: python -m inference.run_forecast
+      - name: Backfill forecasts
+        run: python -m inference.run_backfill
 
       - name: Evaluate forecasts
         run: python -m inference.run_eval

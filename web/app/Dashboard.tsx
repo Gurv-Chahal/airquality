@@ -2,15 +2,21 @@
 
 import { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
+import TopBar from "./components/TopBar";
 import ForecastChart, { type ChartPoint } from "./ForecastChart";
-import BenchmarkPanel, { type EvalRow, type MaeRow } from "./BenchmarkPanel";
+import BenchmarkPanel, { type EvalRow, type MaeRow, type NaiveMae } from "./BenchmarkPanel";
 import type { StationSummary } from "./StationMap";
-import { BAND_COLORS, STATIONS } from "@/lib/stations";
+import { bandByLabel, bandFor, STATIONS, type AqiBand } from "@/lib/stations";
 
 // Leaflet touches `window`, so the map must never render on the server
 const StationMap = dynamic(() => import("./StationMap"), {
     ssr: false,
-    loading: () => <p className="text-sm text-slate-500">loading map…</p>,
+    loading: () => (
+        <div className="flex h-[296px] items-center justify-center rounded-[9px] border border-[#e3e8ee] bg-[#eef2f5] text-sm text-[#98a6b8]">
+            loading map…
+        </div>
+    ),
 });
 
 type ForecastRow = {
@@ -23,168 +29,321 @@ type ForecastRow = {
     modelVersion: string | null;
 };
 
-type EvalPayload = { rows: EvalRow[]; mae: MaeRow[]; windowDays: number };
+type EvalPayload = { rows: EvalRow[]; mae: MaeRow[]; naive: NaiveMae | null; windowDays: number };
 
-const PAST_DAYS = 7; // how much history the chart shows
+const HORIZON = 24; // the pipeline's single forecast horizon, hours
+const HOUR_MS = 3600 * 1000;
 
 const BAND_LEGEND = [
-    { band: "Good", range: "0–12" },
-    { band: "Moderate", range: "12–35.4" },
-    { band: "Unhealthy for Sensitive Groups", range: "35.4–55.4" },
-    { band: "Unhealthy", range: "55.4+" },
+    { label: "Good", range: "0–12" },
+    { label: "Moderate", range: "12–35.4" },
+    { label: "Sensitive groups", range: "35.4–55.4" },
+    { label: "Unhealthy", range: "55.4+" },
 ];
 
-function Card({ title, subtitle, children }: {
-    title?: string;
-    subtitle?: string;
-    children: React.ReactNode;
-}) {
+const fmtHm = (t: string | number) =>
+    new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+const fmtFull = (t: string | number) =>
+    new Date(t).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric" });
+
+function Eyebrow({ children }: { children: React.ReactNode }) {
     return (
-        <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            {title && <h2 className="text-sm font-semibold">{title}</h2>}
-            {subtitle && <p className="mb-3 mt-0.5 text-xs text-slate-500">{subtitle}</p>}
+        <div className="font-mono text-[10px] font-semibold tracking-[.14em] text-[#5b6b7f]">
             {children}
-        </section>
+        </div>
+    );
+}
+
+function BandChip({ band, large }: { band: AqiBand | null; large?: boolean }) {
+    if (!band) return null;
+    return (
+        <span className={`inline-block whitespace-nowrap rounded-full font-semibold tracking-[.02em] ${
+                  large ? "px-3 py-1 text-xs" : "px-[9px] py-0.5 text-[10.5px]"
+              }`}
+              style={{ background: band.color, color: band.fg }}>
+            {band.label}
+        </span>
     );
 }
 
 export default function Dashboard() {
     const [station, setStation] = useState(STATIONS[0].id);
-    const [horizon, setHorizon] = useState(24);
+    const [days, setDays] = useState<7 | 14>(7);
+    const [showNaive, setShowNaive] = useState(false);
     const [stations, setStations] = useState<StationSummary[]>([]);
     const [forecasts, setForecasts] = useState<ForecastRow[]>([]);
-    const [evalData, setEvalData] = useState<EvalPayload>({ rows: [], mae: [], windowDays: 7 });
+    const [evalData, setEvalData] = useState<EvalPayload>({ rows: [], mae: [], naive: null, windowDays: 7 });
+    const [nowMs, setNowMs] = useState(0); // captured at fetch time — render must stay pure
 
     useEffect(() => {
-        fetch("/api/stations").then((r) => r.json()).then(setStations);
+        fetch("/api/stations")
+            .then((r) => r.json())
+            .then((d) => Array.isArray(d) && setStations(d))
+            .catch(() => {});
     }, []);
 
     useEffect(() => {
-        fetch(`/api/forecast?station=${station}`).then((r) => r.json()).then(setForecasts);
-        fetch(`/api/eval?station=${station}`).then((r) => r.json()).then(setEvalData);
+        fetch(`/api/forecast?station=${station}`)
+            .then((r) => r.json())
+            .then((d) => {
+                if (!Array.isArray(d)) return;
+                setForecasts(d);
+                setNowMs(Date.now());
+            })
+            .catch(() => {});
+        fetch(`/api/eval?station=${station}`)
+            .then((r) => r.json())
+            .then((d) => {
+                if (!Array.isArray(d?.rows)) return;
+                setEvalData(d);
+                setNowMs(Date.now());
+            })
+            .catch(() => {});
     }, [station]);
 
-    // horizon options come from the data (single-horizon MVP -> just [24] for now)
-    const horizons = useMemo(() => {
-        const hs = [...new Set(forecasts.map((f) => f.horizonHours))].sort((a, b) => a - b);
-        return hs.length ? hs : [24];
-    }, [forecasts]);
+    // merge: observed actuals (eval rows) + model predictions split into past/future
+    // at "now", plus the naive same-hour-yesterday series derived from actuals
+    const { points, nowT } = useMemo(() => {
+        if (!nowMs) return { points: [] as ChartPoint[], nowT: undefined };
+        const cutoff = nowMs - days * 24 * HOUR_MS;
+        const byTime = new Map<number, ChartPoint>();
+        const at = (t: number) => {
+            let p = byTime.get(t);
+            if (!p) byTime.set(t, (p = { t }));
+            return p;
+        };
 
-    // merge: observed actuals (eval table) + model predictions split into past/future at "now"
-    const { points, nowTime } = useMemo(() => {
-        const nowIso = new Date().toISOString();
-        const cutoff = new Date(Date.now() - PAST_DAYS * 24 * 3600 * 1000).toISOString();
-        const byTime = new Map<string, ChartPoint>();
+        const actualAt = new Map<number, number>();
+        for (const r of evalData.rows) actualAt.set(Date.parse(r.validTime), r.actualPm25);
+        for (const [t, v] of actualAt) if (t >= cutoff) at(t).actual = v;
 
-        [...evalData.rows].reverse().forEach((r) => {
-            if (r.validTime >= cutoff) byTime.set(r.validTime, { time: r.validTime, actual: r.actualPm25 });
-        });
+        // forecasts arrive newest-issued-first; keep the newest per hour
         for (const f of forecasts) {
-            if (f.horizonHours !== horizon || f.predictedPm25 == null || f.validTime < cutoff) continue;
-            const p = byTime.get(f.validTime) ?? { time: f.validTime };
-            if (f.validTime <= nowIso) p.past = p.past ?? f.predictedPm25;
+            if (f.horizonHours !== HORIZON || f.predictedPm25 == null) continue;
+            const t = Date.parse(f.validTime);
+            if (t < cutoff) continue;
+            const p = at(t);
+            if (t <= nowMs) p.past = p.past ?? f.predictedPm25;
             else p.future = p.future ?? f.predictedPm25;
-            byTime.set(f.validTime, p);
         }
 
-        const pts = [...byTime.values()].sort((a, b) => a.time.localeCompare(b.time));
-        // join the past and future prediction lines at the boundary so they read as one curve
+        // naive baseline: this hour's forecast = yesterday's realized reading
+        for (const p of byTime.values()) {
+            const prev = actualAt.get(p.t - 24 * HOUR_MS);
+            if (prev != null) p.naive = prev;
+        }
+
+        const pts = [...byTime.values()].sort((a, b) => a.t - b.t);
+        // join the past and future prediction lines at the boundary so they read as one
+        // curve — but only when they are actually contiguous, not across issuance gaps
         const lastPast = [...pts].reverse().find((p) => p.past !== undefined);
         const firstFuture = pts.find((p) => p.future !== undefined);
-        if (lastPast && firstFuture) lastPast.future = lastPast.past;
-        return { points: pts, nowTime: firstFuture?.time };
-    }, [forecasts, evalData, horizon]);
+        if (lastPast && firstFuture && firstFuture.t - lastPast.t <= 2 * HOUR_MS) {
+            lastPast.future = lastPast.past;
+        }
+        return { points: pts, nowT: nowMs };
+    }, [forecasts, evalData, days, nowMs]);
 
-    const hero = stations.find((s) => s.id === station)?.latest ?? null;
-    const heroBand = hero?.pm25AqiBand ?? "";
-    const lstmMae = evalData.mae.find((m) => m.model !== "skeleton");
+    const sel = stations.find((s) => s.id === station);
+    const hero = sel?.latest ?? null;
+    const heroBand = hero?.predictedPm25 != null
+        ? bandByLabel(hero.pm25AqiBand) ?? bandFor(hero.predictedPm25)
+        : null;
+
+    const latestReading = evalData.rows[0] ?? null; // rows are newest-first
+    const readingBand = latestReading ? bandFor(latestReading.actualPm25) : null;
+
+    const lstmMae = evalData.mae.find((m) => m.model !== "skeleton") ?? null;
+    const naive = evalData.naive;
+    // improvement vs the naive baseline, as the mock's "−XX% vs naive t−24h" pill
+    const deltaPct = lstmMae && naive ? Math.round((1 - lstmMae.mae / naive.mae) * 100) : null;
+
+    const modelVersion = forecasts[0]?.modelVersion ?? hero?.modelVersion ?? null;
+    // "updated HH:MM" = newest forecast issue time across all stations
+    const updatedAt = stations.reduce<string | null>((acc, s) => {
+        const t = s.latest?.issuedTime;
+        return t && (!acc || t > acc) ? t : acc;
+    }, null);
+
+    const evalTableRows = evalData.rows.filter((r) => r.modelVersion != null);
 
     return (
-        <div className="flex flex-col gap-4">
-            {/* controls */}
-            <div className="flex flex-wrap items-center gap-2">
-                <select value={station} onChange={(e) => setStation(e.target.value)}
-                        className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm shadow-sm">
-                    {STATIONS.map((s) => (
-                        <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                </select>
-                {horizons.map((h) => (
-                    <button key={h} onClick={() => setHorizon(h)}
-                            className={`rounded-lg border px-3 py-1.5 text-sm shadow-sm ${
-                                h === horizon
-                                    ? "border-blue-600 bg-blue-600 font-medium text-white"
-                                    : "border-slate-300 bg-white text-slate-600"
-                            }`}>
-                        t+{h}h
-                    </button>
-                ))}
-            </div>
+        <div className="min-h-screen bg-[#f4f6f8] text-[#101828]">
+            <TopBar active="forecast"
+                    pill={<>batch pipeline · updated {updatedAt ? fmtHm(updatedAt) : "—"}</>} />
 
-            {/* hero stats */}
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                <Card>
-                    <p className="text-xs text-slate-500">Forecast — 24h ahead</p>
-                    <p className="mt-1 text-3xl font-bold">
-                        {hero?.predictedPm25 != null ? hero.predictedPm25.toFixed(1) : "—"}
-                        <span className="ml-1 text-sm font-normal text-slate-500">µg/m³</span>
-                    </p>
-                    {hero && (
-                        <span className="mt-2 inline-block rounded-full px-2.5 py-0.5 text-xs font-medium"
-                              style={{
-                                  backgroundColor: BAND_COLORS[heroBand] ?? "#9ca3af",
-                                  color: heroBand === "Good" || heroBand === "Moderate" ? "#1e293b" : "#fff",
-                              }}>
-                            {heroBand}
-                        </span>
-                    )}
-                </Card>
-                <Card>
-                    <p className="text-xs text-slate-500">Model accuracy — last {evalData.windowDays} days</p>
-                    <p className="mt-1 text-3xl font-bold">
-                        {lstmMae ? lstmMae.mae.toFixed(2) : "—"}
-                        <span className="ml-1 text-sm font-normal text-slate-500">µg/m³ MAE</span>
-                    </p>
-                    <p className="mt-2 text-xs text-slate-500">
-                        {lstmMae ? `across ${lstmMae.n} realized forecasts` : "no realized forecasts yet"}
-                    </p>
-                </Card>
-                <Card>
-                    <p className="text-xs text-slate-500">Forecast for</p>
-                    <p className="mt-1 text-lg font-semibold leading-8">
-                        {hero ? new Date(hero.validTime).toLocaleString([], {
-                            weekday: "short", month: "short", day: "numeric", hour: "numeric",
-                        }) : "—"}
-                    </p>
-                    <p className="mt-2 text-xs text-slate-500">
-                        model {forecasts[0]?.modelVersion ?? "…"} · refreshed by the batch pipeline
-                    </p>
-                </Card>
-            </div>
+            <div className="mx-auto max-w-[1280px] px-6 pb-[34px]">
 
-            {/* chart */}
-            <Card title="PM2.5 — observed vs model"
-                  subtitle="Each prediction was made 24 hours in advance from the previous 48h of sensor + weather data. Amber = the next 24 hours.">
-                <ForecastChart points={points} nowTime={nowTime} />
-                <div className="mt-2 flex flex-wrap gap-2">
-                    {BAND_LEGEND.map(({ band, range }) => (
-                        <span key={band} className="inline-flex items-center gap-1.5 text-[11px] text-slate-500">
-                            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: BAND_COLORS[band] }} />
-                            {band} ({range})
+                {/* controls row */}
+                <div className="flex flex-wrap items-center justify-between gap-2.5 pb-0.5 pt-4">
+                    <div className="inline-flex gap-0.5 rounded-[10px] bg-[#e7ebf0] p-[3px]">
+                        {STATIONS.map((s) => (
+                            <button key={s.id} type="button" onClick={() => setStation(s.id)}
+                                    className={`rounded-lg px-[15px] py-[7px] text-[12.5px] font-semibold transition-all ${
+                                        s.id === station
+                                            ? "bg-white text-[#101828] shadow-[0_1px_3px_rgba(16,24,40,.14)]"
+                                            : "text-[#5b6b7f]"
+                                    }`}>
+                                {s.name}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <span className="rounded-[7px] bg-[#101828] px-[11px] py-1.5 font-mono text-[11.5px] font-semibold text-white">
+                            t+24h
                         </span>
-                    ))}
+                        {([7, 14] as const).map((d) => (
+                            <button key={d} type="button" onClick={() => setDays(d)}
+                                    className={`rounded-[7px] border px-[11px] py-1.5 font-mono text-[11.5px] font-medium ${
+                                        days === d
+                                            ? "border-[#101828] bg-white text-[#101828]"
+                                            : "border-[#dbe2ea] text-[#5b6b7f]"
+                                    }`}>
+                                {d}d
+                            </button>
+                        ))}
+                    </div>
                 </div>
-            </Card>
 
-            {/* map + accuracy */}
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-                <Card title="Stations" subtitle="Colored by latest predicted AQI band — click a station to select it.">
-                    <StationMap stations={stations} selected={station} onSelect={setStation} />
-                </Card>
-                <Card title="Forecast accuracy (realized)"
-                      subtitle="Past forecasts joined against what the sensors actually measured.">
-                    <BenchmarkPanel rows={evalData.rows} mae={evalData.mae} windowDays={evalData.windowDays} />
-                </Card>
+                {/* hero stat grid */}
+                <div className="grid gap-3.5 pt-3.5 md:grid-cols-2 xl:grid-cols-[1.35fr_1fr_1fr_1.1fr]">
+                    <div className="rounded-xl border border-[#e3e8ee] bg-white px-[18px] py-4">
+                        <Eyebrow>FORECAST — 24 H AHEAD</Eyebrow>
+                        <div className="mt-1.5 flex flex-wrap items-baseline gap-2">
+                            <span className="font-mono text-[46px] font-semibold leading-none tracking-[-.02em]">
+                                {hero?.predictedPm25 != null ? hero.predictedPm25.toFixed(1) : "—"}
+                            </span>
+                            <span className="text-[13px] font-medium text-[#5b6b7f]">µg/m³</span>
+                            <BandChip band={heroBand} large />
+                        </div>
+                        <div className="mt-[9px] text-[11.5px] text-[#5b6b7f]">
+                            {hero ? <>for {fmtFull(hero.validTime)} · issued {fmtHm(hero.issuedTime)}</> : "no forecast yet"}
+                        </div>
+                    </div>
+
+                    <div className="rounded-xl border border-[#e3e8ee] bg-white px-[18px] py-4">
+                        <Eyebrow>LATEST READING</Eyebrow>
+                        <div className="mt-2.5 flex flex-wrap items-baseline gap-2">
+                            <span className="font-mono text-[28px] font-semibold leading-none">
+                                {latestReading ? latestReading.actualPm25.toFixed(1) : "—"}
+                            </span>
+                            <BandChip band={readingBand} />
+                        </div>
+                        <div className="mt-[11px] text-[11px] text-[#5b6b7f]">
+                            {latestReading
+                                ? <>{fmtFull(latestReading.validTime)} · sensor {STATIONS.find((s) => s.id === station)?.sensorId}</>
+                                : "no scored reading yet"}
+                        </div>
+                    </div>
+
+                    <div className="rounded-xl border border-[#e3e8ee] bg-white px-[18px] py-4">
+                        <Eyebrow>LIVE ERROR — {evalData.windowDays} DAYS</Eyebrow>
+                        <div className="mt-2.5 flex flex-wrap items-baseline gap-[7px]">
+                            <span className="font-mono text-[28px] font-semibold leading-none">
+                                {lstmMae ? lstmMae.mae.toFixed(2) : "—"}
+                            </span>
+                            <span className="text-xs font-medium text-[#5b6b7f]">µg/m³ MAE</span>
+                        </div>
+                        {deltaPct != null ? (
+                            <div className={`mt-[9px] inline-block rounded-full px-2 py-0.5 font-mono text-[11px] font-semibold ${
+                                     deltaPct >= 0 ? "bg-[#e9f5ec] text-[#166534]" : "bg-[#f1f4f7] text-[#5b6b7f]"
+                                 }`}>
+                                {deltaPct >= 0 ? "−" : "+"}{Math.abs(deltaPct)}% vs naive t−24h
+                            </div>
+                        ) : (
+                            <div className="mt-[9px] text-[11px] text-[#98a6b8]">
+                                {lstmMae ? `across ${lstmMae.n} realized forecasts` : "no realized forecasts yet"}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="rounded-xl bg-[#101828] px-[18px] py-4 text-[#e8edf4]">
+                        <div className="font-mono text-[10px] font-semibold tracking-[.14em] text-[#8b98ab]">MODEL</div>
+                        <div className="mt-2 text-[17px] font-semibold">
+                            LSTM · <span className="font-mono">{modelVersion ?? "—"}</span>
+                        </div>
+                        <div className="mt-1.5 text-[11px] leading-[1.6] text-[#aab6c6]">
+                            48 h × 13 features → 64 hidden units.<br />
+                            Pinned W&amp;B artifact · retrain triggered by live error.
+                        </div>
+                    </div>
+                </div>
+
+                {/* chart card */}
+                <div className="mt-3.5 rounded-xl border border-[#e3e8ee] bg-white px-5 pb-3.5 pt-[18px]">
+                    <div className="mb-2.5 flex flex-wrap items-baseline justify-between gap-2">
+                        <div className="text-[13px] font-semibold">Observed vs predicted — PM2.5</div>
+                        <div className="flex flex-wrap items-center gap-3 text-[11px] font-medium text-[#5b6b7f]">
+                            <span className="inline-flex items-center gap-1.5">
+                                <span className="inline-block w-3.5 border-t-2 border-[#334155]" />observed
+                            </span>
+                            <span className="inline-flex items-center gap-1.5">
+                                <span className="inline-block w-3.5 border-t-2 border-dashed border-[#2360c9]" />model, in hindsight
+                            </span>
+                            <span className="inline-flex items-center gap-1.5">
+                                <span className="inline-block w-3.5 border-t-2 border-dashed border-[#d97706]" />next 24 h
+                            </span>
+                            <button type="button" onClick={() => setShowNaive((v) => !v)}
+                                    className={`rounded-full border px-2.5 py-1 font-mono text-[10.5px] font-medium transition-colors ${
+                                        showNaive
+                                            ? "border-[#98a6b8] bg-[#eef2f6] text-[#334155]"
+                                            : "border-[#dbe2ea] text-[#98a6b8]"
+                                    }`}>
+                                -- naive t−24h
+                            </button>
+                        </div>
+                    </div>
+                    <ForecastChart points={points} nowT={nowT} showNaive={showNaive} />
+                    <div className="mt-2 flex flex-wrap gap-3.5 border-t border-[#eef2f6] pt-2.5 text-[10.5px] font-medium text-[#5b6b7f]">
+                        {BAND_LEGEND.map(({ label, range }) => (
+                            <span key={label} className="inline-flex items-center gap-[5px]">
+                                <span className="h-[9px] w-[9px] rounded-full"
+                                      style={{ background: bandByLabel(label === "Sensitive groups" ? "Unhealthy for Sensitive Groups" : label)?.color }} />
+                                {label} {range}
+                            </span>
+                        ))}
+                        <span className="ml-auto font-mono text-[10px]">
+                            each point was predicted 24 h in advance from the prior 48 h
+                        </span>
+                    </div>
+                </div>
+
+                {/* map + realized accuracy */}
+                <div className="mt-3.5 grid gap-3.5 lg:grid-cols-[5fr_7fr]">
+                    <div className="rounded-xl border border-[#e3e8ee] bg-white px-5 py-[18px]">
+                        <div className="text-[13px] font-semibold">Monitoring stations</div>
+                        <div className="mb-3 mt-[3px] text-[11px] text-[#5b6b7f]">
+                            Colored by tomorrow&apos;s predicted band — click to select.
+                        </div>
+                        <StationMap stations={stations} selected={station} onSelect={setStation} />
+                        <div className="mt-[7px] text-[9.5px] text-[#98a6b8]">
+                            © OpenStreetMap · CARTO — government-grade sensors via OpenAQ: Prince George, Vancouver, Kelowna
+                        </div>
+                    </div>
+                    <div className="rounded-xl border border-[#e3e8ee] bg-white px-5 py-[18px]">
+                        <div className="text-[13px] font-semibold">Forecast accuracy — realized</div>
+                        <div className="mb-3 mt-[3px] text-[11px] text-[#5b6b7f]">
+                            Past forecasts joined against what the sensors actually measured, over the last {evalData.windowDays} days.
+                        </div>
+                        <BenchmarkPanel rows={evalTableRows} lstm={lstmMae} naive={naive} />
+                    </div>
+                </div>
+
+                {/* dark CTA strip */}
+                <Link href="/model"
+                      className="mt-3.5 flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[#101828] px-5 py-[15px] transition-colors hover:bg-[#16203a]">
+                    <span className="font-mono text-[11.5px] text-[#aab6c6]">
+                        OpenAQ + Open-Meteo → Snowflake / dbt → PyTorch LSTM → Postgres · precomputed hourly · idempotent
+                    </span>
+                    <span className="whitespace-nowrap text-xs font-semibold text-[#7fb0f4]">
+                        Beats tuned XGBoost by 3% RMSE, −18% vs naive → Model &amp; methods
+                    </span>
+                </Link>
+
+                <div className="mt-[22px] text-center text-[10.5px] text-[#98a6b8]">
+                    Data: OpenAQ (PM2.5) · Open-Meteo (weather) — forecasts precomputed hourly by the batch
+                    pipeline and scored against real sensor readings as they arrive.
+                </div>
             </div>
         </div>
     );
