@@ -13,8 +13,14 @@ import pandas as pd
 import torch
 
 from common.aqi import pm25_to_aqi_band
-from common.snowflake_io import fetch_df
-from inference.run_forecast import FEATURE_TABLE, MODEL_VERSION, load_artifact, upsert_forecast
+from common.postgres_io import fetch_df
+from inference.run_forecast import (
+    FEATURE_TABLE,
+    MODEL_VERSION,
+    as_utc,
+    load_artifact,
+    upsert_forecast,
+)
 from windowing import _hours, _valid_anchors
 
 BACKFILL_DAYS = 8                                 # of anchors -> ~7 days of past + 24h of future
@@ -23,15 +29,27 @@ LOOKBACK_HOURS = (BACKFILL_DAYS + 3) * 24         # extra 48h window + slack for
 
 def read_features() -> pd.DataFrame:
     df = fetch_df(f"""
-        select * from {FEATURE_TABLE}
-        qualify row_number() over (partition by station_id order by valid_time desc) <= {LOOKBACK_HOURS}
+        select *
+        from (
+            select
+                features.*,
+                row_number() over (
+                    partition by station_id
+                    order by valid_time desc
+                ) as _row_number
+            from {FEATURE_TABLE} as features
+        ) as ranked
+        where _row_number <= {LOOKBACK_HOURS}
     """)
-    df.columns = [c.lower() for c in df.columns]
-    return df
+
+    df.columns = [column.lower() for column in df.columns]
+    return df.drop(columns=["_row_number"], errors="ignore")
 
 
 def backfill_rows(df: pd.DataFrame, model, prep) -> list[tuple]:
-    seq_len, horizon, feature_cols = prep["seq_len"], prep["horizon"], prep["feature_cols"]
+    seq_len = int(prep["seq_len"])
+    horizon = int(prep["horizon"])
+    feature_cols = prep["feature_cols"]
     rows = []
     for sid, g in df.groupby("station_id"):
         g = g.sort_values("valid_time").dropna(subset=feature_cols)
@@ -55,8 +73,8 @@ def backfill_rows(df: pd.DataFrame, model, prep) -> list[tuple]:
 
         for i, p in zip(anchors, preds):
             p = max(float(p), 0.0)
-            issued = pd.Timestamp(vt[i]).tz_localize("UTC")
-            valid = issued + pd.Timedelta(hours=horizon)
+            issued = as_utc(vt[i])
+            valid = issued + pd.Timedelta(horizon, unit="h")
             rows.append((sid, valid, issued, horizon, p, None, pm25_to_aqi_band(p), MODEL_VERSION))
         print(f"{sid:<14} {len(anchors)} forecasts issued "
               f"(anchors {pd.Timestamp(vt[anchors[0]])} .. {pd.Timestamp(vt[anchors[-1]])})")

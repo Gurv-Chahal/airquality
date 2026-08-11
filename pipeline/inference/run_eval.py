@@ -3,15 +3,12 @@
 # prediction-vs-reality pair into forecast_eval, and prints a rolling average
 # error per station.
 
-import os
-
 import pandas as pd
-import psycopg2
 from psycopg2.extras import execute_values
 
-from common.snowflake_io import fetch_df   # importing this also loads pipeline/.env
+from common.postgres_io import fetch_df, get_connection
 
-FEATURE_TABLE = "AIRQUALITY.ANALYTICS.FEAT_AIRQUALITY"
+FEATURE_TABLE = "analytics.feat_airquality"
 BACKFILL_DAYS = 14   # how far back to re-check forecasts on every run
 ROLLING_DAYS = 7     # how many days the reported average error covers
 
@@ -19,7 +16,7 @@ ROLLING_DAYS = 7     # how many days the reported average error covers
 # Pull forecasts whose predicted hour is now in the past, so the real reading
 # for that hour should already exist and we can score them.
 def read_mature_forecasts() -> pd.DataFrame:
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute(f"""
@@ -38,15 +35,14 @@ def read_mature_forecasts() -> pd.DataFrame:
 # Pull the actual PM2.5 readings to score against. We take only real readings
 def read_actuals() -> pd.DataFrame:
     df = fetch_df(f"""
-        select station_id, valid_time, pm25
-        from {FEATURE_TABLE}
-        where was_imputed = false
-          and valid_time >= dateadd('day', -{BACKFILL_DAYS + 2}, current_timestamp())
-    """)
-    # Snowflake returns column names uppercased; make them lowercase and give
-    # the timestamps a UTC timezone so they line up with the forecast rows.
+    select station_id, valid_time, pm25
+    from {FEATURE_TABLE}
+    where was_imputed = false
+      and valid_time >= current_timestamp - interval '{BACKFILL_DAYS + 2} days'
+""")
+    # Make timestamps explicitly UTC so they line up with the forecast rows.
     df.columns = [c.lower() for c in df.columns]
-    df["valid_time"] = pd.to_datetime(df["valid_time"]).dt.tz_localize("UTC")
+    df["valid_time"] = pd.to_datetime(df["valid_time"], utc=True)
     return df.rename(columns={"pm25": "actual_pm25"})
 
 
@@ -68,7 +64,7 @@ def build_eval_rows(fc: pd.DataFrame, actuals: pd.DataFrame) -> list[tuple]:
 
 # Write the scored rows into forecast_eval.
 def upsert_eval(rows: list[tuple]) -> None:
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn = get_connection()
     try:
         with conn.cursor() as cur:
             # Insert all rows at once. ON CONFLICT means: if a row for this same
@@ -90,7 +86,7 @@ def upsert_eval(rows: list[tuple]) -> None:
 # Print the average error per station and model over the last ROLLING_DAYS days. (Mean Absolute Error)
 # MAE tells us how far off PM2.5 predictions are - such as +- 2 or 3 (predicton - actual)
 def report_rolling_mae() -> None:
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn = get_connection()
     try:
         cur = conn.cursor()
         # Average the absolute error, grouped by station and model version.

@@ -2,8 +2,8 @@ version: 2
 
 sources:
   - name: raw
-    database: AIRQUALITY
-    schema: RAW
+    database: postgres
+    schema: raw
     tables:
       - name: pm25_observations
       - name: weather_observations

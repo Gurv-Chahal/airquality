@@ -1,11 +1,11 @@
 # Downloads 3 years of hourly weather for every station and
-# loads it into Snowflake's raw storage.
+# loads it into PostgreSQL's raw schema.
 import datetime as dt
 
 import pandas as pd
 import requests
 import time
-from common.snowflake_io import load_replace
+from common.postgres_io import load_replace
 from common.stations import STATIONS
 
 OM_HISTORICAL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
@@ -13,11 +13,17 @@ OM_HISTORICAL = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 HOURLY_VARS = ["temperature_2m", "wind_speed_10m", "wind_direction_10m", "precipitation"]
 DAYS = 1095
 TABLE = "WEATHER_OBSERVATIONS"
-DDL = ("STATION_ID STRING, VALID_TIME STRING, TEMPERATURE_2M FLOAT, "
-       "WIND_SPEED_10M FLOAT, WIND_DIRECTION_10M FLOAT, PRECIPITATION FLOAT")
+DDL = (
+    "station_id text, "
+    "valid_time timestamptz, "
+    "temperature_2m double precision, "
+    "wind_speed_10m double precision, "
+    "wind_direction_10m double precision, "
+    "precipitation double precision"
+)
 
 # Open-Meteo returns lowercase column names; this maps them to the uppercase
-# names our Snowflake table uses.
+# names our raw table uses.
 RENAME = {"time": "VALID_TIME", "temperature_2m": "TEMPERATURE_2M",
           "wind_speed_10m": "WIND_SPEED_10M", "wind_direction_10m": "WIND_DIRECTION_10M",
           "precipitation": "PRECIPITATION"}
@@ -47,7 +53,7 @@ def fetch_weather_history(station, tries=4) -> pd.DataFrame:
     df.insert(0, "STATION_ID", station.station_id)   # tag every row with the station
     # Reformat the timestamp to the same "YYYY-MM-DD HH:MM:SS" string the PM2.5
     # table uses, so dbt can join weather to air-quality on time later.
-    df["VALID_TIME"] = pd.to_datetime(df["VALID_TIME"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+    df["VALID_TIME"] = pd.to_datetime(df["VALID_TIME"], utc=True)
     # Return the columns in a fixed order matching the table definition.
     return df[["STATION_ID", "VALID_TIME", "TEMPERATURE_2M",
                "WIND_SPEED_10M", "WIND_DIRECTION_10M", "PRECIPITATION"]]
@@ -61,7 +67,7 @@ if __name__ == "__main__":
         print(f"{station.station_id:<14} fetched {len(df)} weather rows")
         frames.append(df)
 
-    # Stack all stations into one table and load it into Snowflake. load_replace
+    # Stack all stations into one table and load it into PostgreSQL. load_replace
     # wipes the table first and reloads it, so re-running never makes duplicates.
     all_rows = pd.concat(frames, ignore_index=True)
     total = load_replace(all_rows, TABLE, DDL)

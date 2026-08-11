@@ -1,19 +1,24 @@
 # Downloads 3 years of hourly PM2.5 readings for every
-# station in our registry and loads them into Snowflake's raw storage.
+# station in our registry and loads them into PostgreSQL's raw schema.
 import datetime as dt
 import os
 import time
 import pandas as pd
 import requests
 
-from common.snowflake_io import load_replace
+from common.postgres_io import load_replace
 from common.stations import STATIONS
 
 OPENAQ_BASE = "https://api.openaq.org/v3"
 OPENAQ_KEY = os.environ["OPENAQ_API_KEY"]
 DAYS = 1095
 TABLE = "PM25_OBSERVATIONS"
-DDL = "STATION_ID STRING, SENSOR_ID NUMBER, VALID_TIME STRING, PM25 FLOAT"
+DDL = (
+    "station_id text, "
+    "sensor_id bigint, "
+    "valid_time timestamptz, "
+    "pm25 double precision"
+)
 
 # We ask the API for 180 days at a time instead of all 3 years at once. Smaller
 # date ranges mean fewer pages of results to page through per request.
@@ -66,8 +71,8 @@ def fetch_pm25_history(station) -> pd.DataFrame:
                        for m in rows])
     # Reformat the timestamp into a plain "YYYY-MM-DD HH:MM:SS" string so it
     # matches the weather table and the two can be joined later.
-    df["VALID_TIME"] = (pd.to_datetime(df["VALID_TIME"], utc=True)
-                        .dt.tz_localize(None).dt.strftime("%Y-%m-%d %H:%M:%S"))
+    df["VALID_TIME"] = pd.to_datetime(df["VALID_TIME"], utc=True)
+
     return df
 
 
@@ -79,7 +84,7 @@ if __name__ == "__main__":
         print(f"{station.station_id:<14} fetched {len(df)} rows")
         frames.append(df)
 
-    # Stack all stations into one table and load it into Snowflake. load_replace
+    # Stack all stations into one table and load it into PostgreSQL. load_replace
     # wipes the table first and reloads it, so re-running never makes duplicates.
     all_rows = pd.concat(frames, ignore_index=True)
     total = load_replace(all_rows, TABLE, DDL)

@@ -1,13 +1,14 @@
 transform:
   target: prod
+
   outputs:
     prod:
-      type: snowflake
-      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
-      user: "{{ env_var('SNOWFLAKE_USER') }}"
-      password: "{{ env_var('SNOWFLAKE_PASSWORD') }}"
-      role: ACCOUNTADMIN
-      warehouse: COMPUTE_WH
-      database: AIRQUALITY
-      schema: ANALYTICS
-      threads: 4
+      type: postgres
+      host: "{{ env_var('SUPABASE_DB_HOST') }}"
+      port: 5432
+      user: "{{ env_var('SUPABASE_DB_USER') }}"
+      password: "{{ env_var('SUPABASE_DB_PASSWORD') }}"
+      dbname: postgres
+      schema: analytics
+      threads: 2
+      sslmode: require

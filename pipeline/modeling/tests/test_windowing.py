@@ -16,7 +16,7 @@ def test_offbyone():
     assert X.shape[1:] == (4, 2)
     np.testing.assert_array_equal(X[0,:,0], [0,1,2,3])           # window = rows i-3..i
     assert y[0] == 27                                            # target = row i + 24  (exact)
-    assert (meta["valid_time"][0] - meta["anchor_time"][0]) == pd.Timedelta(hours=24)
+    assert (meta["valid_time"][0] - meta["anchor_time"][0]) == pd.Timedelta(24, unit="h")
 
 def test_no_gap_straddle():
     X, *_ = build_supervised(_series(100, gap_at=50), ["pm25","f1"], 4, 24)
