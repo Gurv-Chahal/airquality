@@ -16,7 +16,7 @@ type LiveStat = {
     naive: { mae: number; n: number } | null;
 };
 
-const TECH = ["PyTorch", "Snowflake", "dbt", "Weights & Biases", "Postgres", "OpenAQ", "Open-Meteo"];
+const TECH = ["PyTorch", "Supabase", "dbt", "Weights & Biases", "Postgres", "OpenAQ", "Open-Meteo"];
 
 function Card({ className = "", children }: { className?: string; children: React.ReactNode }) {
     return (

@@ -12,10 +12,9 @@ jobs:
       run:
         working-directory: pipeline
     env:
-      SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-      SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-      SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      SUPABASE_DB_HOST: ${{ secrets.SUPABASE_DB_HOST }}
+      SUPABASE_DB_USER: ${{ secrets.SUPABASE_DB_USER }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
       OPENAQ_API_KEY: ${{ secrets.OPENAQ_API_KEY }}
       WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
     steps:
@@ -36,14 +35,17 @@ jobs:
       - name: Ingest weather
         run: python -m ingest.ingest_weather
 
-      - name: Rebuild + test feature table (dbt)
+      - name: Rebuild and test feature table
         working-directory: pipeline/transform
         env:
           DBT_PROFILES_DIR: .
         run: |
           dbt deps
-          dbt run
-          dbt test
+          dbt debug
+          dbt build
+
+      - name: Initialize serving tables
+        run: python -m inference.init_db
 
       - name: Backfill forecasts
         run: python -m inference.run_backfill
