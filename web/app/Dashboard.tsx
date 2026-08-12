@@ -252,7 +252,7 @@ export default function Dashboard() {
                             LSTM · <span className="font-mono">{modelVersion ?? "—"}</span>
                         </div>
                         <div className="mt-1.5 text-[11px] leading-[1.6] text-[#aab6c6]">
-                            48 h × 13 features → 64 hidden units.
+                            48 h × 16 features → 64 hidden units.
                         </div>
                     </div>
                 </div>

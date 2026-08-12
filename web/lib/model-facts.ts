@@ -1,45 +1,91 @@
-// Published facts about the trained model — static because they describe the
-// (offline) training run, not live state. Sources in this repo:
-//  - pipeline/modeling/artifacts/baseline_metrics.csv        (baseline metrics, exact)
-//  - pipeline/modeling/wandb/run-20260701_185521-gwi71yr6    (LSTM test_mae 2.7899 / test_rmse 4.1383,
-//    config: 60 epochs, batch 64, lr 1e-3, hidden 64, 1 layer, seq_len 48, horizon 24)
-//  - pipeline/modeling/artifacts/windows.npz                 (44,760 / 9,591 / 9,591 = 63,942 windows, 70/15/15)
-//  - pipeline/modeling/feat_airquality.parquet               (67,536 hourly rows, 13 features)
+// Verified v3 facts. Sources in this repository:
+//  - pipeline/modeling/05_verify_metrics.ipynb
+//  - pipeline/modeling/artifacts/v3/baseline_metrics.csv
+//  - pipeline/modeling/artifacts/v3/windows.npz
+//
+// The held-out test period starts on 2026-08-01. Neither v3 nor XGBoost saw
+// those targets during evaluation training.
 
 export type OfflineMetric = {
     model: string;
     mae: number;
     rmse: number;
+    highMae: number;
+    recall: number;
     note: string;
     ours?: boolean;
 };
 
-// Held-out future test period, identical for all four models.
 export const OFFLINE_METRICS: OfflineMetric[] = [
-    { model: "Climatology", mae: 4.094, rmse: 5.294, note: "typical value for this hour of day" },
-    { model: "Seasonal persistence", mae: 2.879, rmse: 5.019, note: "same as this hour yesterday" },
-    { model: "XGBoost (tuned)", mae: 2.847, rmse: 4.276, note: "gradient-boosted trees on the flattened window" },
-    { model: "LSTM — ours", mae: 2.79, rmse: 4.138, note: "48 h × 13 features → 64 hidden units", ours: true },
+    {
+        model: "Climatology",
+        mae: 13.272,
+        rmse: 25.117,
+        highMae: 55.960,
+        recall: 0,
+        note: "historical average for station and hour",
+    },
+    {
+        model: "24 h persistence",
+        mae: 12.338,
+        rmse: 23.004,
+        highMae: 32.627,
+        recall: 0.475,
+        note: "same PM2.5 as this hour yesterday",
+    },
+    {
+        model: "XGBoost",
+        mae: 11.908,
+        rmse: 20.738,
+        highMae: 42.137,
+        recall: 0.068,
+        note: "boosted trees trained on the same development period",
+    },
+    {
+        model: "Residual LSTM v3",
+        mae: 12.625,
+        rmse: 21.963,
+        highMae: 30.138,
+        recall: 0.458,
+        note: "48 h × 16 features → 64 hidden units",
+        ours: true,
+    },
 ];
 
-export const LSTM_OFFLINE = OFFLINE_METRICS.find((m) => m.ours)!;
-export const PERSISTENCE_OFFLINE = OFFLINE_METRICS.find((m) => m.model === "Seasonal persistence")!;
-export const XGB_OFFLINE = OFFLINE_METRICS.find((m) => m.model.startsWith("XGBoost"))!;
+export const LSTM_OFFLINE = OFFLINE_METRICS.find((metric) => metric.ours)!;
+export const PERSISTENCE_OFFLINE = OFFLINE_METRICS.find(
+    (metric) => metric.model === "24 h persistence",
+)!;
+export const XGB_OFFLINE = OFFLINE_METRICS.find(
+    (metric) => metric.model === "XGBoost",
+)!;
 
-export const rmsePctVsPersistence = (1 - LSTM_OFFLINE.rmse / PERSISTENCE_OFFLINE.rmse) * 100; // ≈ 17.6
-export const rmsePctVsXgb = (1 - LSTM_OFFLINE.rmse / XGB_OFFLINE.rmse) * 100; // ≈ 3.2
+export const highMaePctVsXgb =
+    (1 - LSTM_OFFLINE.highMae / XGB_OFFLINE.highMae) * 100;
+
+export const rmsePctVsPersistence =
+    (1 - LSTM_OFFLINE.rmse / PERSISTENCE_OFFLINE.rmse) * 100;
 
 export const FACTS = {
-    windows: 63_942,
-    featureRows: 67_536,
-    nFeatures: 13,
+    stations: 3,
+    windows: 64_916,
+    developmentWindows: 64_148,
+    testWindows: 768,
+    highEvents: 118,
+    severeEvents: 63,
+    v3DetectedEvents: 54,
+    xgbDetectedEvents: 8,
+    rawRecords: 146_745,
+    pm25Rows: 67_833,
+    weatherRows: 78_912,
+    featureRows: 68_509,
+    duplicateNaturalKeys: 0,
+    externalApis: 2,
+    years: 3,
+    nFeatures: 16,
     seqLen: 48,
     horizonHours: 24,
-    epochs: 60,
     hidden: 64,
-    layers: 1,
-    batch: 64,
-    lr: "1e-3",
-    artifact: "pm25-lstm:v1",
-    split: "70 / 15 / 15",
+    artifact: "pm25-lstm:v3",
+    testStart: "2026-08-01",
 };
