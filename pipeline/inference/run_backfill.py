@@ -21,7 +21,7 @@ from inference.run_forecast import (
     load_artifact,
     upsert_forecast,
 )
-from windowing import _hours, _valid_anchors
+from windowing import _hours, _valid_anchors, add_station_features
 
 BACKFILL_DAYS = 8                                 # of anchors -> ~7 days of past + 24h of future
 LOOKBACK_HOURS = (BACKFILL_DAYS + 3) * 24         # extra 48h window + slack for gaps
@@ -50,8 +50,10 @@ def backfill_rows(df: pd.DataFrame, model, prep) -> list[tuple]:
     seq_len = int(prep["seq_len"])
     horizon = int(prep["horizon"])
     feature_cols = prep["feature_cols"]
+    pm25_index = feature_cols.index("pm25")
     rows = []
     for sid, g in df.groupby("station_id"):
+        g = add_station_features(g)
         g = g.sort_values("valid_time").dropna(subset=feature_cols)
         if len(g) <= seq_len:
             print(f"{sid:<14} not enough contiguous history — skipped")
@@ -68,8 +70,14 @@ def backfill_rows(df: pd.DataFrame, model, prep) -> list[tuple]:
         X = np.stack([feats[i - seq_len + 1: i + 1] for i in anchors])
         n, L, F = X.shape
         Xs = prep["scaler"].transform(X.reshape(-1, F)).reshape(n, L, F).astype(np.float32)
+        current_pm25 = torch.from_numpy(
+            X[:, -1, pm25_index]
+        ).float().unsqueeze(1)
         with torch.no_grad():
-            preds = model(torch.from_numpy(Xs)).numpy().ravel()
+            preds = model(
+                torch.from_numpy(Xs),
+                current_pm25,
+            ).numpy().ravel()
 
         for i, p in zip(anchors, preds):
             p = max(float(p), 0.0)

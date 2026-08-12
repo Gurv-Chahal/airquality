@@ -1,7 +1,13 @@
 import sys; from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # -> modeling/
 import numpy as np, pandas as pd
-from windowing import build_supervised, latest_window
+from splits import time_split
+from windowing import (
+    FEATURE_COLS,
+    add_station_features,
+    build_supervised,
+    latest_window,
+)
 
 def _series(n, gap_at=None):
     t = pd.date_range("2026-01-01", periods=n, freq="h", tz="UTC")
@@ -27,6 +33,38 @@ def test_latest_window():
     w, _ = latest_window(_series(60), ["pm25","f1"], seq_len=4)
     np.testing.assert_array_equal(w[:,0], [56,57,58,59])         # exactly the last 4 rows
 
+def test_station_features():
+    df = pd.concat([
+        _series(1).assign(station_id="kelowna"),
+        _series(1).assign(station_id="vancouver"),
+    ], ignore_index=True)
+    result = add_station_features(df)
+    assert set(FEATURE_COLS).issuperset({
+        "station_is_kelowna",
+        "station_is_prince_george",
+        "station_is_vancouver",
+    })
+    assert result.loc[0, "station_is_kelowna"] == 1.0
+    assert result.loc[0, "station_is_vancouver"] == 0.0
+    assert result.loc[1, "station_is_vancouver"] == 1.0
+
+def test_explicit_time_split():
+    meta = pd.DataFrame({
+        "valid_time": pd.date_range("2026-07-30", periods=5, freq="D", tz="UTC")
+    })
+    train, validation, test = time_split(
+        meta,
+        validation_start="2026-07-31",
+        test_start="2026-08-02",
+    )
+    np.testing.assert_array_equal(train, [0])
+    np.testing.assert_array_equal(validation, [1, 2])
+    np.testing.assert_array_equal(test, [3, 4])
+
 if __name__ == "__main__":
-    test_offbyone(); test_no_gap_straddle(); test_latest_window()
+    test_offbyone()
+    test_no_gap_straddle()
+    test_latest_window()
+    test_station_features()
+    test_explicit_time_split()
     print("all windowing tests passed ✅")

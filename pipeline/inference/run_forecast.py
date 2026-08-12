@@ -23,9 +23,9 @@ from common.postgres_io import fetch_df, get_connection
 from model import LSTMRegressor
 from windowing import latest_window
 
-# The one exact model version this job uses. Pinning a specific version (":v1")
+# The one exact model version this job uses. Pinning a specific version
 # means retraining a new model can never silently change what production predicts.
-ARTIFACT = "gurv-ch32-university-of-the-fraser-valley/airquality-pm25/pm25-lstm:v2"
+ARTIFACT = "gurv-ch32-university-of-the-fraser-valley/airquality-pm25/pm25-lstm:v3"
 MODEL_VERSION = ARTIFACT.rsplit("/", 1)[-1]
 FEATURE_TABLE = "analytics.feat_airquality"
 LOOKBACK_HOURS = 168   # pull a full week so short gaps can't starve the 48h window
@@ -37,7 +37,13 @@ def load_artifact():
     prep = joblib.load(art_dir / "preprocess.joblib")
     cfg = json.loads((art_dir / "model_config.json").read_text())
     # Rebuild the network with the same shape, then load the trained weights into it.
-    model = LSTMRegressor(cfg["n_features"], cfg["hidden"], cfg["layers"], cfg["dropout"])
+    model = LSTMRegressor(
+        cfg["n_features"],
+        cfg["hidden"],
+        cfg["layers"],
+        cfg["dropout"],
+        residual=bool(cfg.get("residual", prep.get("residual", False))),
+    )
     model.load_state_dict(torch.load(art_dir / "model.pt", map_location="cpu", weights_only=True))
     model.eval() # switch to prediction mode (no training behavior)
     return model, prep
@@ -75,6 +81,7 @@ def as_utc(value) -> pd.Timestamp:
 def build_rows(df: pd.DataFrame, model, prep) -> list[tuple]:
     seq_len = int(prep["seq_len"])
     horizon = int(prep["horizon"])
+    pm25_index = prep["feature_cols"].index("pm25")
     rows = []
     for sid, g in df.groupby("station_id"):
         try:
@@ -84,11 +91,19 @@ def build_rows(df: pd.DataFrame, model, prep) -> list[tuple]:
             # If the latest 48 hours have a gap, we can't predict safely — skip this station.
             print(f"{sid:<14} no contiguous {seq_len}h window — skipped")
             continue
-        # Scale the window with the SAME scaler used in training, then run the model.
+        # Scaling hides the raw PM2.5 value, so preserve it separately for a
+        # residual model. Older absolute models safely ignore this argument.
         x = prep["scaler"].transform(w).astype(np.float32)
-        with torch.no_grad():                                       # no gradients needed for prediction
-            pred = float(model(torch.from_numpy(x).unsqueeze(0)))   # add a batch dimension, get one number back
-        pred = max(pred, 0.0)                                       # a pollution level can't be negative
+        current_pm25 = torch.tensor(
+            [[w[-1, pm25_index]]],
+            dtype=torch.float32,
+        )
+        with torch.no_grad():
+            pred = model(
+                torch.from_numpy(x).unsqueeze(0),
+                current_pm25,
+            ).item()
+        pred = max(pred, 0.0)
 
         # The window's last hour is when the forecast is "issued"; valid_time is
         # that hour plus the 24h horizon (the hour we're actually predicting).
