@@ -25,7 +25,7 @@ from windowing import latest_window
 
 # The one exact model version this job uses. Pinning a specific version (":v1")
 # means retraining a new model can never silently change what production predicts.
-ARTIFACT = "gurv-ch32-university-of-the-fraser-valley/airquality-pm25/pm25-lstm:v1"
+ARTIFACT = "gurv-ch32-university-of-the-fraser-valley/airquality-pm25/pm25-lstm:v2"
 MODEL_VERSION = ARTIFACT.rsplit("/", 1)[-1]
 FEATURE_TABLE = "analytics.feat_airquality"
 LOOKBACK_HOURS = 168   # pull a full week so short gaps can't starve the 48h window
