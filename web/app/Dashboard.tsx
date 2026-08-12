@@ -249,11 +249,9 @@ export default function Dashboard() {
                     <div className="rounded-xl bg-[#101828] px-[18px] py-4 text-[#e8edf4]">
                         <div className="font-mono text-[10px] font-semibold tracking-[.14em] text-[#8b98ab]">MODEL</div>
                         <div className="mt-2 text-[17px] font-semibold">
-                            LSTM · <span className="font-mono">{modelVersion ?? "—"}</span>
+                            Version 3
                         </div>
-                        <div className="mt-1.5 text-[11px] leading-[1.6] text-[#aab6c6]">
-                            48 h × 16 features → 64 hidden units.
-                        </div>
+
                     </div>
                 </div>
 
